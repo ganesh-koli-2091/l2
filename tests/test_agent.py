@@ -359,3 +359,73 @@ async def test_normal_review_happy_path():
         report = final.values.get("final_report", "")
         assert "Code Review Report" in report
         assert "test_file.py" in report
+
+
+# ---------------------------------------------------------------------------
+# Faithfulness evaluator tests
+# ---------------------------------------------------------------------------
+
+class TestFaithfulnessEvaluator:
+    def test_no_findings_scores_1_0(self):
+        """Clean code with no findings → score 1.0."""
+        from src.eval import evaluate_faithfulness
+        result = evaluate_faithfulness(
+            tool_outputs=["SECURITY_OK", "QUALITY_OK", "API_STANDARDS_SKIP"],
+            review_text="## Code Review\n**Verdict:** APPROVE\nNo issues detected.",
+        )
+        assert result.score == 1.0
+        assert result.covered == []
+        assert result.missing == []
+
+    def test_security_findings_low_coverage_lowers_score(self):
+        """Review that ignores security keywords scores below 1.0."""
+        from src.eval import evaluate_faithfulness
+        result = evaluate_faithfulness(
+            tool_outputs=["SECURITY_FINDINGS — 2 issue(s)"],
+            review_text="## Code Review\n**Verdict:** REJECT\nSome issues found.",
+        )
+        assert result.score < 1.0
+        assert len(result.missing) > 0
+
+    def test_verdict_inconsistency_detected(self):
+        """APPROVE verdict when SECURITY_FINDINGS present → verdict_consistent=False."""
+        from src.eval import evaluate_faithfulness
+        result = evaluate_faithfulness(
+            tool_outputs=["SECURITY_FINDINGS — 3 issue(s)"],
+            review_text="## Code Review\n**Verdict:** APPROVE\nLooks good.",
+        )
+        assert result.verdict_consistent is False
+
+    def test_verdict_consistent_when_reject_and_findings(self):
+        """REJECT verdict with SECURITY_FINDINGS → verdict_consistent=True."""
+        from src.eval import evaluate_faithfulness
+        result = evaluate_faithfulness(
+            tool_outputs=["SECURITY_FINDINGS — 1 issue(s)"],
+            review_text="## Code Review\n**Verdict:** REJECT\nSecurity issue found.",
+        )
+        assert result.verdict_consistent is True
+
+
+# ---------------------------------------------------------------------------
+# ToolObservabilityCallback tests
+# ---------------------------------------------------------------------------
+
+class TestToolObservabilityCallback:
+    def test_records_ok_call(self):
+        """record_from_message stores an ok entry for non-error output."""
+        from src.callbacks import ToolObservabilityCallback
+        tracker = ToolObservabilityCallback()
+        tracker.record_from_message("scan_security_issues", "SECURITY_OK")
+        summary = tracker.summary()
+        assert summary["total_tool_calls"] == 1
+        assert summary["successful"] == 1
+        assert summary["failed"] == 0
+
+    def test_records_error_call(self):
+        """record_from_message stores an error entry when TOOL_ERROR present."""
+        from src.callbacks import ToolObservabilityCallback
+        tracker = ToolObservabilityCallback()
+        tracker.record_from_message("scan_security_issues", "TOOL_ERROR: gateway timeout")
+        summary = tracker.summary()
+        assert summary["failed"] == 1
+        assert summary["calls"][0]["status"] == "error"
